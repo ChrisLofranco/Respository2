@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Driving Simulator</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="game">
+    <canvas id="canvas"></canvas>
+
+    <!-- HUD -->
+    <div id="hud">
+      <div class="speedo">
+        <div class="speed-value"><span id="speed">0</span><small>km/h</small></div>
+        <div class="gear" id="gear">D</div>
+      </div>
+      <div class="pedals">
+        <div class="pedal" id="pedal-throttle"><span>GAS</span></div>
+        <div class="pedal" id="pedal-brake"><span>BRAKE</span></div>
+      </div>
+    </div>
+
+    <!-- Minimap -->
+    <div id="minimap-wrap">
+      <canvas id="minimap"></canvas>
+    </div>
+
+    <!-- Controls hint -->
+    <div id="help">
+      <div class="help-title">Driving Simulator</div>
+      <div class="help-keys">
+        <span><b>W</b> / <b>↑</b> Accelerate</span>
+        <span><b>S</b> / <b>↓</b> Brake / Reverse</span>
+        <span><b>A</b> <b>D</b> / <b>← →</b> Steer</span>
+        <span><b>Space</b> Handbrake</span>
+        <span><b>H</b> Horn</span>
+        <span><b>C</b> Camera</span>
+      </div>
+    </div>
+
+    <button id="help-toggle" title="Toggle help">?</button>
+
+    <!-- Touch controls -->
+    <div id="touch">
+      <div class="touch-steer">
+        <button class="tbtn" data-key="left">◀</button>
+        <button class="tbtn" data-key="right">▶</button>
+      </div>
+      <div class="touch-drive">
+        <button class="tbtn tbtn-brake" data-key="down">▼</button>
+        <button class="tbtn tbtn-gas" data-key="up">▲</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>
