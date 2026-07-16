@@ -22,10 +22,38 @@
       </div>
     </div>
 
+    <!-- Lap timer -->
+    <div id="laps">
+      <div class="lap-main">
+        <span class="lap-label">LAP</span>
+        <span id="lap-time">0.00</span>
+      </div>
+      <div class="lap-sub">
+        <span>Best <b id="best-time">--</b></span>
+        <span>Laps <b id="lap-count">0</b></span>
+      </div>
+    </div>
+
     <!-- Minimap -->
     <div id="minimap-wrap">
       <canvas id="minimap"></canvas>
     </div>
+
+    <!-- Car color picker -->
+    <div id="colors" title="Car colour">
+      <button class="swatch active" data-color="#e94b3c" style="background:#e94b3c"></button>
+      <button class="swatch" data-color="#3c78e9" style="background:#3c78e9"></button>
+      <button class="swatch" data-color="#2fb463" style="background:#2fb463"></button>
+      <button class="swatch" data-color="#e9b53c" style="background:#e9b53c"></button>
+      <button class="swatch" data-color="#e97f3c" style="background:#e97f3c"></button>
+      <button class="swatch" data-color="#8b5ee9" style="background:#8b5ee9"></button>
+      <button class="swatch" data-color="#2fb4a8" style="background:#2fb4a8"></button>
+      <button class="swatch" data-color="#eef1f5" style="background:#eef1f5"></button>
+      <button class="swatch" data-color="#2b2f36" style="background:#2b2f36"></button>
+    </div>
+
+    <!-- Mute -->
+    <button id="mute-toggle" title="Mute / unmute">🔊</button>
 
     <!-- Controls hint -->
     <div id="help">
@@ -37,6 +65,8 @@
         <span><b>Space</b> Handbrake</span>
         <span><b>H</b> Horn</span>
         <span><b>C</b> Camera</span>
+        <span><b>M</b> Mute</span>
+        <span class="help-tip">Drive through the glowing gates for a lap time!</span>
       </div>
     </div>
 

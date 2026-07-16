@@ -215,6 +215,145 @@
   const skidMarks = []; // {x,y,a} recent tire marks
   const MAX_SKIDS = 900;
 
+  // ---------- Car colour ----------
+  const CAR_COLORS = ['#e94b3c', '#3c78e9', '#2fb463', '#e9b53c', '#e97f3c',
+                      '#8b5ee9', '#2fb4a8', '#eef1f5', '#2b2f36', '#e93c8f'];
+  function hexToRgb(h) {
+    h = h.replace('#', '');
+    if (h.length === 3) h = h.split('').map(c => c + c).join('');
+    const n = parseInt(h, 16);
+    return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+  }
+  function shade(hex, pct) {
+    const { r, g, b } = hexToRgb(hex);
+    const t = pct > 0 ? 255 : 0, f = Math.abs(pct) / 100;
+    const mix = v => Math.round((t - v) * f + v);
+    return `rgb(${mix(r)},${mix(g)},${mix(b)})`;
+  }
+  function makeColorSet(hex) {
+    return { light: shade(hex, 26), mid: hex, dark: shade(hex, -24) };
+  }
+  let playerColor = '#e94b3c';
+  let playerCS = makeColorSet(playerColor);
+
+  // ============================================================
+  //  TRAFFIC  (AI cars that drive the road grid on a node graph)
+  // ============================================================
+  const LANE = 30;              // offset from road centre so cars keep right
+  const traffic = [];
+  function nodePos(i) {
+    const gx = i % GRID, gy = (i / GRID) | 0;
+    return { x: gx * TILE + ROAD / 2, y: gy * TILE + ROAD / 2 };
+  }
+  function neighbors(i) {
+    const gx = i % GRID, gy = (i / GRID) | 0, out = [];
+    if (gx > 0) out.push(i - 1);
+    if (gx < GRID - 1) out.push(i + 1);
+    if (gy > 0) out.push(i - GRID);
+    if (gy < GRID - 1) out.push(i + GRID);
+    return out;
+  }
+  function spawnTraffic(n) {
+    for (let k = 0; k < n; k++) {
+      let from;
+      do {
+        from = Math.floor(rand() * GRID * GRID);
+      } while (neighbors(from).length === 0);
+      const nb = neighbors(from);
+      const to = nb[Math.floor(rand() * nb.length)];
+      traffic.push({
+        from, to, t: rand(),
+        speed: 120 + rand() * 100,
+        maxSpeed: 150 + rand() * 130,
+        cs: makeColorSet(CAR_COLORS[Math.floor(rand() * CAR_COLORS.length)]),
+        x: 0, y: 0, angle: 0,
+      });
+    }
+  }
+  function trafficPos(c) {
+    const a = nodePos(c.from), b = nodePos(c.to);
+    const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len, uy = dy / len;   // travel dir
+    const px = -uy, py = ux;              // perpendicular "right" (screen y-down)
+    return {
+      x: a.x + dx * c.t + px * LANE,
+      y: a.y + dy * c.t + py * LANE,
+      angle: Math.atan2(uy, ux),
+    };
+  }
+  function updateTraffic(dt) {
+    const gapT = 82 / TILE;
+    for (const c of traffic) {
+      let blocked = false;
+      // don't rear-end another car on the same segment
+      for (const o of traffic) {
+        if (o === c) continue;
+        if (o.from === c.from && o.to === c.to && o.t > c.t && o.t - c.t < gapT) { blocked = true; break; }
+      }
+      // yield to the player if they're right in front
+      const pdx = car.x - c.x, pdy = car.y - c.y;
+      if (pdx * pdx + pdy * pdy < 58 * 58) blocked = true;
+
+      if (blocked) c.speed = Math.max(0, c.speed - 280 * dt);
+      else c.speed = Math.min(c.maxSpeed, c.speed + 85 * dt);
+
+      c.t += c.speed * dt / TILE;
+      if (c.t >= 1) {
+        c.t -= 1;
+        let choices = neighbors(c.to).filter(x => x !== c.from);   // avoid U-turns
+        if (choices.length === 0) choices = neighbors(c.to);
+        const next = choices[Math.floor(rand() * choices.length)];
+        c.from = c.to; c.to = next;
+      }
+      const p = trafficPos(c);
+      c.x = p.x; c.y = p.y; c.angle = p.angle;
+    }
+  }
+
+  // ============================================================
+  //  CHECKPOINTS / LAP TIMER  (a circuit around the city)
+  // ============================================================
+  const checkpoints = [];
+  function buildCheckpoints() {
+    const x1 = 1 * TILE + ROAD / 2, x7 = 7 * TILE + ROAD / 2;
+    const y1 = 1 * TILE + ROAD / 2, y7 = 7 * TILE + ROAD / 2;
+    const L = (a, b, t) => a + (b - a) * t;
+    const add = (x, y, dir) => checkpoints.push({ x, y, dir });
+    add(L(x1, x7, 1 / 3), y1, 'h');   // top
+    add(L(x1, x7, 2 / 3), y1, 'h');
+    add(x7, L(y1, y7, 1 / 3), 'v');   // right
+    add(x7, L(y1, y7, 2 / 3), 'v');
+    add(L(x1, x7, 2 / 3), y7, 'h');   // bottom
+    add(L(x1, x7, 1 / 3), y7, 'h');
+    add(x1, L(y1, y7, 2 / 3), 'v');   // left
+    add(x1, L(y1, y7, 1 / 3), 'v');
+  }
+  buildCheckpoints();
+  spawnTraffic(16);
+
+  let nextCP = 0, hasStarted = false, lapStart = 0;
+  let bestLap = null, lastLap = null, lapCount = 0;
+  const CP_RADIUS = 74;
+
+  function updateLaps(now) {
+    const cp = checkpoints[nextCP];
+    const dx = car.x - cp.x, dy = car.y - cp.y;
+    if (dx * dx + dy * dy < CP_RADIUS * CP_RADIUS) {
+      if (nextCP === 0) {
+        if (!hasStarted) { hasStarted = true; lapStart = now; }
+        else {
+          lastLap = now - lapStart;
+          if (bestLap === null || lastLap < bestLap) bestLap = lastLap;
+          lapCount++; lapStart = now;
+          flashLap(); lapChime();
+        }
+      } else {
+        checkpointBlip();
+      }
+      nextCP = (nextCP + 1) % checkpoints.length;
+    }
+  }
+
   // ============================================================
   //  INPUT
   // ============================================================
@@ -234,6 +373,7 @@
     if (e.code === 'KeyH') horn();
     if (e.code === 'KeyC') cycleCamera();
     if (e.code === 'KeyR') respawn();
+    if (e.code === 'KeyM') toggleMute();
     keys[e.code] = true;
   });
   window.addEventListener('keyup', (e) => {
@@ -272,14 +412,50 @@
     car.speed = 0; car.steer = 0;
   }
 
+  // Colour picker
+  const swatches = document.querySelectorAll('.swatch');
+  swatches.forEach((sw) => {
+    sw.addEventListener('click', () => {
+      playerColor = sw.dataset.color;
+      playerCS = makeColorSet(playerColor);
+      swatches.forEach(s => s.classList.remove('active'));
+      sw.classList.add('active');
+    });
+  });
+
+  // Mute button
+  const muteBtn = document.getElementById('mute-toggle');
+  function toggleMute() {
+    setMuted(!muted);
+    muteBtn.textContent = muted ? '🔇' : '🔊';
+    muteBtn.classList.toggle('muted', muted);
+  }
+  muteBtn.addEventListener('click', () => { ensureAudio(); toggleMute(); });
+
+  // Lap-timer flash
+  const lapsEl = document.getElementById('laps');
+  function flashLap() {
+    lapsEl.classList.remove('flash');
+    void lapsEl.offsetWidth; // reflow to restart animation
+    lapsEl.classList.add('flash');
+  }
+
   // ============================================================
   //  AUDIO (engine hum + horn) via WebAudio
   // ============================================================
   let audioCtx = null, engineOsc = null, engineGain = null, engineFilter = null;
+  let master = null, skidNoise = null, skidGain = null;
+  let muted = false;
+
   function ensureAudio() {
     if (audioCtx) { if (audioCtx.state === 'suspended') audioCtx.resume(); return; }
     try {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      master = audioCtx.createGain();
+      master.gain.value = muted ? 0 : 1;
+      master.connect(audioCtx.destination);
+
+      // --- engine (sawtooth through a lowpass) ---
       engineOsc = audioCtx.createOscillator();
       engineOsc.type = 'sawtooth';
       engineFilter = audioCtx.createBiquadFilter();
@@ -289,37 +465,76 @@
       engineGain.gain.value = 0.0;
       engineOsc.connect(engineFilter);
       engineFilter.connect(engineGain);
-      engineGain.connect(audioCtx.destination);
+      engineGain.connect(master);
       engineOsc.frequency.value = 60;
       engineOsc.start();
+
+      // --- tyre screech (filtered noise, gated by skidGain) ---
+      const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 1, audioCtx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      skidNoise = audioCtx.createBufferSource();
+      skidNoise.buffer = buf;
+      skidNoise.loop = true;
+      const skidFilter = audioCtx.createBiquadFilter();
+      skidFilter.type = 'bandpass';
+      skidFilter.frequency.value = 1600;
+      skidFilter.Q.value = 0.8;
+      skidGain = audioCtx.createGain();
+      skidGain.gain.value = 0;
+      skidNoise.connect(skidFilter);
+      skidFilter.connect(skidGain);
+      skidGain.connect(master);
+      skidNoise.start();
     } catch (e) { audioCtx = null; }
   }
 
-  function updateEngineSound() {
+  function setMuted(m) {
+    muted = m;
+    if (master && audioCtx) master.gain.setTargetAtTime(m ? 0 : 1, audioCtx.currentTime, 0.05);
+  }
+
+  function updateEngineSound(skidding) {
     if (!audioCtx) return;
     const spd = Math.abs(car.speed) / car.maxSpeed;
     const target = 55 + spd * 180;
     engineOsc.frequency.setTargetAtTime(target, audioCtx.currentTime, 0.08);
     engineFilter.frequency.setTargetAtTime(400 + spd * 1400, audioCtx.currentTime, 0.1);
-    const gainTarget = 0.015 + spd * 0.05;
-    engineGain.gain.setTargetAtTime(gainTarget, audioCtx.currentTime, 0.1);
+    engineGain.gain.setTargetAtTime(0.015 + spd * 0.05, audioCtx.currentTime, 0.1);
+    // tyre screech level
+    const screech = skidding ? Math.min(0.09, 0.02 + spd * 0.09) : 0;
+    skidGain.gain.setTargetAtTime(screech, audioCtx.currentTime, 0.05);
   }
 
-  function horn() {
+  // one-shot tone helper
+  function tone(type, freq, dur, vol, freqEnd) {
     ensureAudio();
     if (!audioCtx) return;
-    const o = audioCtx.createOscillator();
-    const g = audioCtx.createGain();
-    o.type = 'square';
-    o.frequency.value = 330;
-    g.gain.value = 0.0;
-    o.connect(g); g.connect(audioCtx.destination);
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.type = type;
     const t = audioCtx.currentTime;
-    g.gain.setValueAtTime(0.0, t);
-    g.gain.linearRampToValueAtTime(0.06, t + 0.02);
-    g.gain.setValueAtTime(0.06, t + 0.35);
-    g.gain.linearRampToValueAtTime(0.0, t + 0.42);
-    o.start(t); o.stop(t + 0.45);
+    o.frequency.setValueAtTime(freq, t);
+    if (freqEnd) o.frequency.exponentialRampToValueAtTime(freqEnd, t + dur);
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(vol, t + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(master || audioCtx.destination);
+    o.start(t); o.stop(t + dur + 0.02);
+  }
+
+  function horn() { tone('square', 330, 0.4, 0.06); }
+  function checkpointBlip() { tone('sine', 880, 0.14, 0.05, 1320); }
+  function lapChime() {
+    tone('sine', 660, 0.16, 0.05);
+    setTimeout(() => tone('sine', 990, 0.28, 0.055), 130);
+  }
+  let lastThud = 0;
+  function collisionThud() {
+    if (!audioCtx) return;
+    const now = audioCtx.currentTime;
+    if (now - lastThud < 0.15) return; // avoid machine-gun thuds
+    lastThud = now;
+    tone('triangle', 150, 0.18, 0.07, 60);
   }
 
   // ============================================================
@@ -334,7 +549,7 @@
   // ============================================================
   //  PHYSICS UPDATE
   // ============================================================
-  function update(dt) {
+  function update(dt, now) {
     // --- steering input ---
     let steerInput = 0;
     if (control.left) steerInput -= 1;
@@ -393,9 +608,10 @@
     let nx = car.x + vx * dt;
     let ny = car.y + vy * dt;
 
-    // --- collisions with buildings & lakes (simple slide) ---
+    // --- collisions with buildings, lakes & traffic (simple slide) ---
     const hit = collides(nx, ny);
     if (hit) {
+      if (Math.abs(car.speed) > 70) collisionThud();
       // try axis-separated movement so we slide along walls
       if (!collides(nx, car.y)) { ny = car.y; }
       else if (!collides(car.x, ny)) { nx = car.x; }
@@ -410,9 +626,8 @@
 
     // --- skid marks (handbrake or hard turn at speed) ---
     const lateral = Math.abs(car.steer) * Math.abs(car.speed);
-    if ((handbraking && Math.abs(car.speed) > 30) || lateral > 220) {
-      addSkid();
-    }
+    const skidding = (handbraking && Math.abs(car.speed) > 30) || lateral > 220;
+    if (skidding) addSkid();
 
     // update pedal HUD state
     updatePedals(pedalGas, pedalBrake || handbraking);
@@ -428,8 +643,10 @@
     cam.targetZoom = cameraMode === 1 ? 0.62 : (1.05 - Math.min(Math.abs(car.speed) / car.maxSpeed, 1) * 0.18);
     cam.zoom += (cam.targetZoom - cam.zoom) * Math.min(3 * dt, 1);
 
-    updateEngineSound();
-    updateHUD();
+    updateTraffic(dt);
+    updateLaps(now);
+    updateEngineSound(skidding);
+    updateHUD(now);
   }
 
   const carHalfDiag = Math.hypot(car.width, car.length) / 2;
@@ -447,6 +664,11 @@
     }
     for (const l of lakes) {
       if (x > l.x && x < l.x + l.w && y > l.y && y < l.y + l.h) return true;
+    }
+    // other cars
+    for (const c of traffic) {
+      const dx = x - c.x, dy = y - c.y, rr = r + 15;
+      if (dx * dx + dy * dy < rr * rr) return true;
     }
     return false;
   }
@@ -470,7 +692,7 @@
   // ============================================================
   //  RENDERING
   // ============================================================
-  function draw() {
+  function draw(now) {
     // sky/ground base
     ctx.clearRect(0, 0, W, H);
 
@@ -494,13 +716,16 @@
     drawParks(view);
     drawLakes(view);
     drawSkids(view);
+    drawCheckpoints(view, now);
     drawTrees(view);
     drawBuildings(view);
     drawLamps(view);
+    drawTraffic(view);
     drawCar();
 
     ctx.restore();
 
+    drawCPArrow();
     drawMinimap();
   }
 
@@ -714,12 +939,12 @@
     }
   }
 
-  function drawCar() {
+  // Generic vehicle renderer, shared by the player and traffic.
+  function drawVehicle(x, y, angle, cs, opt) {
+    const L = opt.length, Wc = opt.width, steer = opt.steer || 0;
     ctx.save();
-    ctx.translate(car.x, car.y);
-    ctx.rotate(car.angle);
-
-    const L = car.length, Wc = car.width;
+    ctx.translate(x, y);
+    ctx.rotate(angle);
 
     // shadow
     ctx.fillStyle = 'rgba(0,0,0,0.25)';
@@ -729,14 +954,12 @@
     // wheels
     ctx.fillStyle = '#15181c';
     const wheelW = 10, wheelH = 6;
-    // rear wheels (fixed)
     roundRect(ctx, -L * 0.34 - wheelW / 2, -Wc / 2 - 2, wheelW, wheelH, 2); ctx.fill();
     roundRect(ctx, -L * 0.34 - wheelW / 2, Wc / 2 - 4, wheelW, wheelH, 2); ctx.fill();
-    // front wheels (steer)
     for (const s of [-1, 1]) {
       ctx.save();
       ctx.translate(L * 0.32, s * (Wc / 2 - 1));
-      ctx.rotate(car.steer);
+      ctx.rotate(steer);
       ctx.fillStyle = '#15181c';
       roundRect(ctx, -wheelW / 2, -wheelH / 2, wheelW, wheelH, 2);
       ctx.fill();
@@ -745,9 +968,9 @@
 
     // body gradient
     const grad = ctx.createLinearGradient(0, -Wc / 2, 0, Wc / 2);
-    grad.addColorStop(0, '#ff6b5e');
-    grad.addColorStop(0.5, '#e94b3c');
-    grad.addColorStop(1, '#c23b2e');
+    grad.addColorStop(0, cs.light);
+    grad.addColorStop(0.5, cs.mid);
+    grad.addColorStop(1, cs.dark);
     ctx.fillStyle = grad;
     roundRect(ctx, -L / 2, -Wc / 2, L, Wc, 8);
     ctx.fill();
@@ -756,7 +979,7 @@
     ctx.fillStyle = 'rgba(20,24,30,0.85)';
     roundRect(ctx, -L * 0.16, -Wc / 2 + 4, L * 0.42, Wc - 8, 5);
     ctx.fill();
-    // windshield tint
+    // windshields
     ctx.fillStyle = 'rgba(150,200,230,0.55)';
     roundRect(ctx, L * 0.06, -Wc / 2 + 5, L * 0.14, Wc - 10, 3);
     ctx.fill();
@@ -773,17 +996,84 @@
     roundRect(ctx, L / 2 - 4, -Wc / 2 + 3, 3, 5, 1); ctx.fill();
     roundRect(ctx, L / 2 - 4, Wc / 2 - 8, 3, 5, 1); ctx.fill();
     // tail lights
-    ctx.fillStyle = car.speed < -2 ? '#ff9b9b' : '#8f2b2b';
+    ctx.fillStyle = opt.reverse ? '#ff9b9b' : '#8f2b2b';
     roundRect(ctx, -L / 2 + 1, -Wc / 2 + 3, 3, 5, 1); ctx.fill();
     roundRect(ctx, -L / 2 + 1, Wc / 2 - 8, 3, 5, 1); ctx.fill();
-
-    // brake light glow
-    if (control.down || control.brake) {
+    // brake glow
+    if (opt.brake) {
       ctx.fillStyle = 'rgba(255,60,60,0.85)';
       roundRect(ctx, -L / 2 - 1, -Wc / 2 + 3, 3, 5, 1); ctx.fill();
       roundRect(ctx, -L / 2 - 1, Wc / 2 - 8, 3, 5, 1); ctx.fill();
     }
 
+    ctx.restore();
+  }
+
+  function drawCar() {
+    drawVehicle(car.x, car.y, car.angle, playerCS, {
+      length: car.length, width: car.width, steer: car.steer,
+      brake: control.down || control.brake, reverse: car.speed < -2,
+    });
+  }
+
+  function drawTraffic(v) {
+    for (const c of traffic) {
+      if (c.x < v.x0 - 40 || c.x > v.x1 + 40 || c.y < v.y0 - 40 || c.y > v.y1 + 40) continue;
+      drawVehicle(c.x, c.y, c.angle, c.cs, {
+        length: 44, width: 24, steer: 0, brake: c.speed < 25, reverse: false,
+      });
+    }
+  }
+
+  // ---------- Checkpoints ----------
+  function drawCheckpoints(v, now) {
+    const pulse = 0.5 + 0.5 * Math.sin((now || 0) * 0.005);
+    const half = ROAD / 2 - 6;
+    for (let i = 0; i < checkpoints.length; i++) {
+      const cp = checkpoints[i];
+      if (cp.x < v.x0 - 80 || cp.x > v.x1 + 80 || cp.y < v.y0 - 80 || cp.y > v.y1 + 80) continue;
+      const isNext = i === nextCP;
+      ctx.save();
+      ctx.translate(cp.x, cp.y);
+      if (cp.dir === 'v') ctx.rotate(Math.PI / 2);
+      if (isNext) {
+        ctx.fillStyle = `rgba(79,209,197,${0.10 + 0.10 * pulse})`;
+        ctx.fillRect(-9, -half, 18, half * 2);
+      }
+      ctx.strokeStyle = isNext ? `rgba(79,209,197,${0.6 + 0.35 * pulse})` : 'rgba(255,255,255,0.18)';
+      ctx.lineWidth = isNext ? 6 : 4;
+      ctx.beginPath();
+      ctx.moveTo(0, -half); ctx.lineTo(0, half);
+      ctx.stroke();
+      ctx.fillStyle = isNext ? `rgba(79,209,197,${0.75 + 0.25 * pulse})` : 'rgba(255,255,255,0.25)';
+      for (const s of [-1, 1]) {
+        ctx.beginPath();
+        ctx.arc(0, s * half, isNext ? 7 : 5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+  }
+
+  // Screen-space arrow pointing to the next checkpoint when it's off-screen.
+  function drawCPArrow() {
+    const cp = checkpoints[nextCP];
+    const sx = (cp.x - cam.x) * cam.zoom + W / 2;
+    const sy = (cp.y - cam.y) * cam.zoom + H / 2;
+    const m = 74;
+    if (sx > m && sx < W - m && sy > m && sy < H - m) return; // visible already
+    const cx = W / 2, cy = H / 2;
+    const ang = Math.atan2(sy - cy, sx - cx);
+    const rx = Math.min(W - m, Math.max(m, sx));
+    const ry = Math.min(H - m, Math.max(m, sy));
+    ctx.save();
+    ctx.translate(rx, ry);
+    ctx.rotate(ang);
+    ctx.fillStyle = 'rgba(79,209,197,0.9)';
+    ctx.beginPath();
+    ctx.moveTo(17, 0); ctx.lineTo(-9, -11); ctx.lineTo(-9, 11);
+    ctx.closePath();
+    ctx.fill();
     ctx.restore();
   }
 
@@ -810,6 +1100,19 @@
     // parks
     mctx.fillStyle = COLORS.park;
     for (const p of parks) mctx.fillRect(p.x * scale, p.y * scale, p.w * scale, p.h * scale);
+
+    // traffic dots
+    mctx.fillStyle = 'rgba(255,220,120,0.85)';
+    for (const c of traffic) mctx.fillRect(c.x * scale - 1, c.y * scale - 1, 2.4, 2.4);
+
+    // checkpoints (next one highlighted)
+    for (let i = 0; i < checkpoints.length; i++) {
+      const cp = checkpoints[i];
+      mctx.fillStyle = i === nextCP ? '#4fd1c5' : 'rgba(255,255,255,0.4)';
+      mctx.beginPath();
+      mctx.arc(cp.x * scale, cp.y * scale, i === nextCP ? 3.5 : 2, 0, Math.PI * 2);
+      mctx.fill();
+    }
 
     // car dot with heading
     const cx = car.x * scale, cy = car.y * scale;
@@ -845,8 +1148,19 @@
   const gearEl = document.getElementById('gear');
   const pedalGasEl = document.getElementById('pedal-throttle');
   const pedalBrakeEl = document.getElementById('pedal-brake');
+  const lapTimeEl = document.getElementById('lap-time');
+  const bestTimeEl = document.getElementById('best-time');
+  const lapCountEl = document.getElementById('lap-count');
 
-  function updateHUD() {
+  function fmtTime(ms) {
+    if (ms == null) return '--';
+    const s = ms / 1000;
+    const m = Math.floor(s / 60);
+    const sec = s - m * 60;
+    return m > 0 ? m + ':' + sec.toFixed(2).padStart(5, '0') : sec.toFixed(2);
+  }
+
+  function updateHUD(now) {
     // convert px/s to a playful km/h
     const kmh = Math.round(Math.abs(car.speed) * 0.28);
     speedEl.textContent = kmh;
@@ -857,6 +1171,10 @@
       gearEl.textContent = 'D';
       gearEl.classList.remove('reverse');
     }
+    // lap timer
+    lapTimeEl.textContent = fmtTime(hasStarted ? now - lapStart : 0);
+    bestTimeEl.textContent = fmtTime(bestLap);
+    lapCountEl.textContent = lapCount;
   }
 
   function updatePedals(gas, brake) {
@@ -872,8 +1190,8 @@
     let dt = (now - last) / 1000;
     last = now;
     if (dt > 0.05) dt = 0.05; // clamp big gaps (tab switches)
-    update(dt);
-    draw();
+    update(dt, now);
+    draw(now);
     requestAnimationFrame(frame);
   }
 
